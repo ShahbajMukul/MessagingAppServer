@@ -1,8 +1,9 @@
-﻿namespace MessagingAppServer.DBResutls
+﻿using MessagingAppServer.Models;
+
+namespace MessagingAppServer.DBResutls
 {
-    public class RegistrationResult
+    public class RegistrationResult : UserAccount
     {
-        public int UserID { get; set; }
-        public string Username { get; set; }
+        public string Token { get; set; }
     }
 }

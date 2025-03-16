@@ -8,8 +8,9 @@ public class UserAccount
     public string? LastName { get; set; }
     public string? Email { get; set; }
     // hashed password
-    public string? Password { get; set; }
+    public Byte[]? Password { get; set; }
     public DateTime LastActiveTime { get; set; }
     public bool ActiveNow { get; set; }
     public string? PublicKey { get; set; }
+    public string? PrivateKey { get; set; }
 }
