@@ -12,5 +12,4 @@ public class UserAccount
     public DateTime LastActiveTime { get; set; }
     public bool ActiveNow { get; set; }
     public string? PublicKey { get; set; }
-    public string? PrivateKey { get; set; }
 }

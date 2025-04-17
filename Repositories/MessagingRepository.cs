@@ -33,21 +33,22 @@ namespace MessagingAppServer.Repositories
         }
         public async Task<RegistrationResult?> RegisterUserAsync(RegistrationPayload registrationData)
         {
+            if (registrationData == null || string.IsNullOrEmpty(registrationData.Password))
+            {
+                throw new ArgumentException("Registration data and password are required");
+            }
             using (var connection = new SqlConnection(_connectionString))
             {
-                // generate the RSA Keys
-                var (publicKey, privateKey) = CryptographyService.GenerateRSAKeyPair();
+
 
                 var parameters = new DynamicParameters();
                 parameters.Add("@Username", registrationData.Username);
                 parameters.Add("@FirstName", registrationData.FirstName);
                 parameters.Add("@LastName", registrationData.LastName);
                 parameters.Add("@Email", registrationData.Email);
-                var passwordHashBytes = HexToBytes(registrationData.Password);
+                var passwordHashBytes = HashPassword(registrationData!.Password);
                 parameters.Add("@PasswordHash", passwordHashBytes, dbType: DbType.Binary);
-                parameters.Add("@PublicKey", publicKey);
-                parameters.Add("@PrivateKey", privateKey);
-
+                parameters.Add("@PublicKey", registrationData!.PublicKey);
 
                 var registrationResult = await connection.QueryFirstOrDefaultAsync<RegistrationResult>(
                                 "sp_RegisterUser",
@@ -58,16 +59,27 @@ namespace MessagingAppServer.Repositories
                 {
                     return null;
                 }
+
                 JwtSecurityTokenHandler tokenHandler;
                 SecurityToken token;
                 CreateToken(registrationResult, out tokenHandler, out token);
-                // token needed for all other api calls including sending messages
-                registrationResult!.Token = tokenHandler.WriteToken(token);
-
-                // User will need the private key to decrypt messages sent to them
-                registrationResult.PrivateKey = privateKey;
+                registrationResult.Token = tokenHandler.WriteToken(token);
 
                 return registrationResult;
+            }
+        }
+
+        private byte[] HashPassword(string password)
+        {
+            if (string.IsNullOrEmpty(password))
+            {
+                Console.WriteLine("Password cannot be null or empty");
+                throw new ArgumentException("Password cannot be null or empty");
+            }
+
+            using (var sha256 = SHA256.Create())
+            {
+                return sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
             }
         }
 
@@ -89,7 +101,7 @@ namespace MessagingAppServer.Repositories
                 }
 
                 // Verify if the password is correct
-                bool isPasswordValid = VerifyPassword(loginData.PasswordHash, loginResult.Password);
+                bool isPasswordValid = VerifyPassword(loginData.Password, loginResult.Password);
 
                 if (!isPasswordValid || loginResult.Username == null)
                 {
@@ -104,12 +116,25 @@ namespace MessagingAppServer.Repositories
                 // user doesnt need the password anymore after logging in
                 loginResult.Password = null;
 
-                // SP already provides the user with the privateKey
+                await UpdatePublicKeyAsync(loginData.Username, loginData.PublicKey);
 
                 return loginResult ?? null;
             }
         }
+        public async Task UpdatePublicKeyAsync(string username, string newPublicKey)
+        {
+            using (var connection = new SqlConnection(_connectionString))
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@Username", username);
+                parameters.Add("@NewPublicKey", newPublicKey);
 
+                var result = await connection.ExecuteAsync(
+                    "sp_UpdatePublicKey",
+                    parameters,
+                    commandType: CommandType.StoredProcedure);
+            }
+        }
         private void CreateToken(UserAccount? accountData, out JwtSecurityTokenHandler tokenHandler, out SecurityToken token)
         {
             // create the token
@@ -131,24 +156,27 @@ namespace MessagingAppServer.Repositories
             token = tokenHandler.CreateToken(tokenDescriptor);
         }
 
-        private bool VerifyPassword(string givenPassHex, byte[] storedPass)
+        private bool VerifyPassword(string givenPassword, byte[] storedPass)
         {
-            if (givenPassHex == null || storedPass == null)
+            if (givenPassword == null || storedPass == null)
             {
                 return false;
             }
 
             // Remove the "0x" prefix if present
-            if (givenPassHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            if (givenPassword.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             {
-                givenPassHex = givenPassHex.Substring(2);
+                givenPassword = givenPassword.Substring(2);
             }
 
             // Convert stored password bytes to hex string
             string storedPassHex = BitConverter.ToString(storedPass).Replace("-", "");
 
-            // Compare the hex strings (case-insensitive)
-            return string.Equals(givenPassHex, storedPassHex, StringComparison.OrdinalIgnoreCase);
+            // Hash the given password
+            byte[] givenPasswordHash = HashPassword(givenPassword);
+
+            // Compare the byte arrays
+            return storedPass.SequenceEqual(givenPasswordHash);
         }
 
 
@@ -186,7 +214,7 @@ namespace MessagingAppServer.Repositories
         }
 
 
-        public async Task<List<OpenConversationResult>> OpenConversationAsync(int userID1, int userID2)
+        public async Task<OpenConversationResult> OpenConversationAsync(int userID1, int userID2)
         {
             using (var connection = new SqlConnection(_connectionString))
             {
@@ -198,7 +226,7 @@ namespace MessagingAppServer.Repositories
                                                   "sp_StartOrGetConversation",
                                                   parameters,
                                                   commandType: CommandType.StoredProcedure);
-                return convResult.AsList() ?? new List<OpenConversationResult>();
+                return convResult.FirstOrDefault() ?? new OpenConversationResult();
             }
         }
 

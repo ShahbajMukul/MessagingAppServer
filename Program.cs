@@ -6,10 +6,29 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using System.Text;
 using MessagingAppServer.Repositories;
 using MessagingAppServer.Services;
+
 var builder = WebApplication.CreateBuilder(args);
 
+// Add OpenApi for documentation
 builder.Services.AddOpenApi();
 
+// for real time message sending
+builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = true;
+});
+
+
+
+builder.WebHost.ConfigureKestrel(serverOptions =>
+{
+    serverOptions.ListenAnyIP(5500, listenOptions =>
+    {
+        listenOptions.UseHttps();
+    });
+});
+// Get the connection string – throw an error if not found
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 if (string.IsNullOrEmpty(connectionString))
 {
@@ -18,64 +37,88 @@ if (string.IsNullOrEmpty(connectionString))
 
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAllOrigins",
-        builder =>
-        {
-            builder.AllowAnyOrigin()
-                   .AllowAnyHeader()
-                   .AllowAnyMethod();
-        });
+    options.AddPolicy("AllowMyFrontendCalls", policy =>
+    policy.WithOrigins("http://localhost:8000", "https://localhost:8500")
+    .AllowAnyMethod()
+    .AllowAnyHeader()
+    .AllowCredentials());
 });
 
-// Reference: Claude: Adding jwt for dotnet core backend auth
+// Configure HTTPS redirection on port 5500. Make sure your launch settings match.
+/* builder.Services.AddHttpsRedirection(options =>
+{
+options.HttpsPort = 5500;
+}); */
 
+// Configure JWT settings.
+// Ensure your configuration contains JwtSettings with a valid SecretKey.
 var jwtSettings = builder.Configuration.GetSection("JwtSettings").Get<JwtSettings>();
-
 if (string.IsNullOrEmpty(jwtSettings!.SecretKey))
 {
     throw new InvalidOperationException("jwtSettings not found.");
 }
 builder.Services.AddSingleton(jwtSettings);
 
-// Add JWT Auth
-
+// Set up JWT Authentication.
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
     {
-        options.TokenValidationParameters = new TokenValidationParameters
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(jwtSettings.SecretKey)),
+        ValidateIssuer = false,
+        ValidateAudience = jwtSettings.Audience,
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.FromMinutes(5)
+    };
+
+    // Log authentication failures for debugging.
+    options.Events = new JwtBearerEvents
+    {
+        OnAuthenticationFailed = context =>
         {
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.ASCII.GetBytes(jwtSettings.SecretKey)),
-            ValidateIssuer = false,
-            ValidateAudience = jwtSettings.Audience,
-            ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromMinutes(5)
-        };
+            Console.WriteLine($"Authentication failed: {context.Exception.Message}");
+            return Task.CompletedTask;
+        }
+    };
+});
 
-        // tests
-        options.Events = new JwtBearerEvents
-        {
-            OnAuthenticationFailed = context =>
-            {
-                Console.WriteLine($"Authentication failed: {context.Exception.Message}");
-                return Task.CompletedTask;
-            }
-        };
-
-    });
-
-
-
+// Add authorization.
 builder.Services.AddAuthorization();
+
+// Register your repository.
 builder.Services.AddScoped<IMessagingRepository>(sp =>
-    new MessagingRepository(connectionString, jwtSettings));
+new MessagingRepository(connectionString, jwtSettings));
 
 
+
+// IMPORTANT: Order matters—first redirect to HTTPS, then handle CORS & authentication.
+/* app.UseHttpsRedirection(); */
+builder.Services.AddHttpsRedirection(options =>
+{
+    options.HttpsPort = 5500;
+});
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowMyFrontendCalls", policy =>
+        policy.WithOrigins(
+            "http://localhost:8000",
+            "https://localhost:8500",
+            "https://localhost:8500",
+            "https://10.0.0.23:5500",    // Your dev machine
+            "http://10.0.0.23:5500",     // Your dev machine HTTP
+            "https://10.0.2.16:8500"
+        )
+        .SetIsOriginAllowed(_ => true) // For development only
+        .AllowAnyMethod()
+        .AllowAnyHeader()
+        .AllowCredentials());
+});
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// In development, set up the OpenApi endpoints.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -85,11 +128,10 @@ if (app.Environment.IsDevelopment())
         options.HideClientButton = true;
     });
 }
-
+app.UseCors("AllowMyFrontendCalls");
+app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
-
-app.UseHttpsRedirection();
+app.MapHub<ChatHub>("/chathub");
 app.MapAppEndpoints();
-
 app.Run();
