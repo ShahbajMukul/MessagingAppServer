@@ -6,20 +6,13 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using System.Text;
 using MessagingAppServer.Repositories;
 using MessagingAppServer.Services;
+using Microsoft.IdentityModel.Logging;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add OpenApi for documentation
 builder.Services.AddOpenApi();
-
-// for real time message sending
-builder.Services.AddSignalR();
-builder.Services.AddSignalR(options =>
-{
-    options.EnableDetailedErrors = true;
-});
-
-
 
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
@@ -35,14 +28,6 @@ if (string.IsNullOrEmpty(connectionString))
     throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 }
 
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("AllowMyFrontendCalls", policy =>
-    policy.WithOrigins("http://localhost:8000", "https://localhost:8500")
-    .AllowAnyMethod()
-    .AllowAnyHeader()
-    .AllowCredentials());
-});
 
 // Configure HTTPS redirection on port 5500. Make sure your launch settings match.
 /* builder.Services.AddHttpsRedirection(options =>
@@ -116,6 +101,16 @@ builder.Services.AddCors(options =>
         .AllowCredentials());
 });
 
+
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = true;
+    options.HandshakeTimeout = TimeSpan.FromSeconds(30);
+    IdentityModelEventSource.ShowPII = true;
+});
+
+
+
 var app = builder.Build();
 
 // In development, set up the OpenApi endpoints.
@@ -132,6 +127,9 @@ app.UseCors("AllowMyFrontendCalls");
 app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapHub<ChatHub>("/chathub");
+app.UseEndpoints(endpoints =>
+{
+    endpoints.MapHub<ChatHub>("/chathub");
+});
 app.MapAppEndpoints();
 app.Run();
